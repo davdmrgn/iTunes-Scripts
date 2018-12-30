@@ -1,0 +1,531 @@
+property scriptNameString : "Rename Files"
+property versionString : "1.2.1"
+property attributionString : "Plaid Cow Solutions"
+property emailString : "itunes-as@plaidcow.net"
+property urlString : "http://applescript.plaidcow.net/"
+property titleString : scriptNameString & " v" & versionString
+
+property firstRun : true
+
+--property useAppearanceOSAX : true
+property showOperationFinishedMessage : true
+property showConfirmOperationMessage : false
+
+(* Save all of the padding preferences *)
+property DiscCountMinimumLength : 0
+property DiscNumberMinimumLength : 0
+property TrackCountMinimumLength : 0
+property TrackNumberMinimumLength : 2
+
+property DiscCountPadCharacter : "0"
+property DiscNumberPadCharacter : "0"
+property TrackCountPadCharacter : "0"
+property TrackNumberPadCharacter : "0"
+
+property InvalidCharacterReplacement : "_"
+
+(* Save the default rename list *)
+property renameList : {"[artist] - [title].mp3", "[track number]. [artist] - [title].mp3", "[track number]. [title].mp3"}
+property renameString : (item 1 of renameList)
+
+(* Save all of the info to support setup in the main menu *)
+property SetupIsVisible : true
+property setupVisibleList : {"About this Script", Â
+	"Add Rename String", "Edit a Rename String", "Organize Rename Strings", "Remove a Rename String", Â
+	"Script Preferences", "^ Hide Setup Options ^"}
+property setupHiddenList : {"About this Script", "v Show Setup Options v"}
+
+(* Keep track of a reference to the progress bar, so if we happen to error out of the code we can still close it. *)
+--property progressBar : {}
+--property MinTracksToShowProgessBarFor : 10
+
+
+(* Set up the return values for the RenameSingleTrack function (a #define) *)
+property RENAME_SUCCESSFUL : 1001
+property RENAME_NOT_CONFIRMED : 1002
+property RENAME_ERROR_CONTINUE_RENAMING : 1003
+property RENAME_ERROR_STOP_RENAMING : 1004
+
+on run
+	log SetupIsVisible
+	(* Make sure that iTunes is running *)
+	tell application "Finder"
+		if (name of every process) does not contain "iTunes" then
+			display dialog "iTunes must be running to use this script" buttons {"OK"} default button 1
+			return
+		end if
+	end tell
+	
+	
+	(* Make sure the user sees the splash screen at least once *)
+	if firstRun is true then
+		my ShowAboutDialog()
+		set firstRun to false
+	end if
+	
+	
+	(* Get the list of selected tracks and the associated main menu title *)
+	tell application "iTunes"
+		activate
+		set listOfSelectedTracks to (get selection of front window as list)
+		set trackCount to count of listOfSelectedTracks
+		if trackCount is 0 then
+			set listOfSelectedTracks to (get tracks of view of front window as list)
+			set trackCount to count listOfSelectedTracks
+			set whichFiles to "all files in playlist \"" & name of view of front window & "\""
+		else
+			set whichFiles to "current selection"
+		end if
+		if trackCount is 1 then
+			set mainMenuTitle to "Rename " & whichFiles & " (" & (trackCount as string) & " file) to match pattern:"
+		else
+			set mainMenuTitle to "Rename " & whichFiles & " (" & (trackCount as string) & " files) to match pattern:"
+		end if
+	end tell -- application iTunes
+	
+	(* Show the Main Menu. If we happen to error out, close the progress bar if it exists *)
+	try
+		tell me to my showMainMenu(mainMenuTitle, listOfSelectedTracks)
+	on error
+		(*if useAppearanceOSAX then
+			try
+				close progress indicator progressBar
+			end try
+		end if*)
+	end try
+	
+	log SetupIsVisible
+end run
+
+
+
+on showMainMenu(mainMenuTitle, theTrackList)
+	(* Create the title message for the selection list *)
+	if SetupIsVisible then
+		set mainMenuList to (renameList & "" & setupVisibleList)
+	else
+		set mainMenuList to (renameList & "" & setupHiddenList)
+	end if
+	
+	(* Get the command the user wants to run *)
+	tell application "iTunes" to set decision to choose from list mainMenuList Â
+		with prompt mainMenuTitle Â
+		OK button name "Rename!" cancel button name "Close" default items renameString
+	if decision is false then return
+	set selectedCommand to item 1 of decision
+	
+	(*Unless we find out later, assume this is not a rename command. *)
+	set renameCommandSelected to false
+	
+	(* Check all of the setup options. If none fit, a rename command was selected, so rename the tracks. *)
+	if selectedCommand is "About this Script" then
+		my ShowAboutDialog()
+		
+	else if selectedCommand is "Add Rename String" then
+		set renameString to my GetEditedRenameString("Enter the rename string to add:", (item 1 of renameList))
+		if renameString is not "" then set the end of renameList to renameString
+		
+	else if selectedCommand is "Edit a Rename String" then
+		my EditRenameString()
+		
+	else if selectedCommand is "Organize Rename Strings" then
+		my OrganizeRenameStrings()
+		
+	else if selectedCommand is "Remove a Rename String" then
+		my RemoveRenameString()
+		
+	else if selectedCommand is "Script Preferences" then
+		my UpdatePreferences()
+		
+	else if selectedCommand is in {"v Show Setup Options v", "^ Hide Setup Options ^"} then
+		set SetupIsVisible to (not SetupIsVisible)
+		
+	else if selectedCommand is not "" then
+		set renameString to selectedCommand
+		my RenameTracks(theTrackList, renameString)
+		set renameCommandSelected to true
+		
+	end if
+	
+	if not renameCommandSelected then tell me to my showMainMenu(mainMenuTitle, theTrackList)
+end showMainMenu
+
+
+
+on ShowAboutDialog()
+	tell application "iTunes" to display dialog titleString & return & return Â
+		& attributionString & " <" & emailString & ">" & return & urlString Â
+		buttons {"OK"} default button 1
+end ShowAboutDialog
+
+
+
+on EditRenameString()
+	tell application "iTunes" to set choice to choose from list renameList Â
+		with prompt "Select Rename String to Edit:" OK button name "Delete" cancel button name "Go Back"
+	if choice is not false then
+		set originalString to item 1 of choice
+		set editedString to my GetEditedRenameString("Edit the rename string:", originalString)
+		if editedString is not "" then
+			set newList to {}
+			repeat with listItem in renameList
+				if (listItem as string) is (originalString as string) then
+					set end of newList to editedString
+				else
+					set end of newList to listItem
+				end if
+			end repeat
+			set renameList to newList
+		end if
+	end if
+end EditRenameString
+
+
+
+on OrganizeRenameStrings()
+	tell application "iTunes" to display dialog "Sorry, but this feature has not been implemented. If you would like to be able to re-order your rename strings, send us an email." & return & return & Â
+		attributionString & " <" & emailString & ">" & return & urlString Â
+		buttons {"OK"} default button 1
+	
+	(* show a list with all the itmes plus done organizing at the end. Then two buttons, move up and move down *)
+end OrganizeRenameStrings
+
+
+
+on RemoveRenameString()
+	tell application "iTunes" to set choice to choose from list renameList Â
+		with prompt "Select Rename String to Remove:" OK button name "Delete" cancel button name "Go Back"
+	if choice is not false then
+		set deleteString to item 1 of choice
+		set newList to {}
+		repeat with listItem in renameList
+			if (listItem as string) is not (deleteString as string) then set end of newList to listItem
+		end repeat
+		set renameList to newList
+	end if
+end RemoveRenameString
+
+
+
+on UpdatePreferences()
+	set showOperationFinishedMessage to Â
+		my GetYesNo("Do do want to see a dialog when the renaming is finished?", showOperationFinishedMessage)
+	
+	set showConfirmOperationMessage to Â
+		my GetYesNo("Do you want to confirm each replacement before it is made?", showConfirmOperationMessage)
+	
+	set InvalidCharacterReplacement to Â
+		my GetCharacter("Invalid characters in the resultant filenames must be replaced. What character should they be replaced with?", InvalidCharacterReplacement)
+	
+	(* Get the preferences for the Appearance OSAX *)
+	(*set useAppearanceOSAX to Â
+		my GetYesNo("Should the 24U Appearance OSAX be used to display a progress bar?", useAppearanceOSAX)
+	if useAppearanceOSAX then
+		set msg to "Since the progress bar takes time to start up, how many tracks must be selected before the progress bar will appear?"
+		set MinTracksToShowProgessBarFor to my GetInteger(msg, MinTracksToShowProgessBarFor)
+		if (MinTracksToShowProgessBarFor < 1) then set MinTracksToShowProgessBarFor to 1
+	end if*)
+	
+	(* Get all of the padding preferences *)
+	set {DiscCountMinimumLength, DiscCountPadCharacter} to Â
+		my GetPaddingPreferences("disc count", DiscCountMinimumLength, DiscCountPadCharacter)
+	
+	set {DiscNumberMinimumLength, DiscNumberPadCharacter} to Â
+		my GetPaddingPreferences("disc number", DiscNumberMinimumLength, DiscNumberPadCharacter)
+	
+	set {TrackCountMinimumLength, TrackCountPadCharacter} to Â
+		my GetPaddingPreferences("track count", TrackCountMinimumLength, TrackCountPadCharacter)
+	
+	set {TrackNumberMinimumLength, TrackNumberPadCharacter} to Â
+		my GetPaddingPreferences("track number", TrackNumberMinimumLength, TrackNumberPadCharacter)
+end UpdatePreferences
+
+
+
+on RenameTracks(theTrackList, renameString)
+	(* Track the numbers of each return type that we get.*)
+	set {renamesSuccessful, renamesNotConfirmed, renamesWithErrors} to {0, 0, 0}
+	
+	(*set showProgressBar to Â
+		useAppearanceOSAX and Â
+		not showConfirmOperationMessage and Â
+		MinTracksToShowProgessBarFor ² (count of theTrackList) *)
+	
+	tell application "iTunes"
+		(* Set up the progress bar *)
+		(*if showProgressBar then
+			try
+				(* Create the progress bar. The min max values will not set from the create command. have to use update. *)
+				--using terms from application "Finder"
+				set progressBar to create progress indicator with properties Â
+					{name:(titleString & " - " & attributionString), closeable:false, indeterminate:false, current value:0, minimum:0, maximum:(count of theTrackList), top message:"Renaming FilesÉ", bottom message:"Renaming file 0 of " & ((count of theTrackList) as string)}
+				update progress indicator progressBar minimum 0
+				update progress indicator progressBar maximum (count of theTrackList)
+				--end using terms from
+			on error
+				set {useAppearanceOSAX, showProgessBar} to {false, false}
+			end try
+		end if*)
+		
+		(* For each of the tracks, call the rename function *)
+		set theResult to -1
+		repeat with i from 1 to (count of theTrackList)
+			(* Update the progress bar *)
+			(*if showProgressBar then
+				update progress indicator progressBar bottom message Â
+					"Renaming file " & (i as string) & " of " & ((count of theTrackList) as string)
+			end if*)
+			
+			set progressString to "Renaming File " & (i as string) & " of " & ((count of theTrackList) as string)
+			set theResult to my RenameSingleTrack(item i of theTrackList, renameString, progressString)
+			if theResult is RENAME_SUCCESSFUL then
+				set renamesSuccessful to renamesSuccessful + 1
+			else if theResult is RENAME_NOT_CONFIRMED then
+				set renamesNotConfirmed to renamesNotConfirmed + 1
+			else if theResult is RENAME_ERROR_CONTINUE_RENAMING then
+				set renamesWithErrors to renamesWithErrors + 1
+			else if theResult is RENAME_ERROR_STOP_RENAMING then
+				set renamesWithErrors to renamesWithErrors + 1
+				exit repeat
+			end if
+			
+			(* Update the progress bar *)
+			(*if showProgressBar then
+				update progress indicator progressBar current value i
+			end if*)
+		end repeat -- with i from 1 to trackCount
+		
+		(* Generate the operation finished message and summary of files changed *)
+		if showOperationFinishedMessage then
+			set msg to "Renaming has finished for " & ((count of theTrackList) as string) & " files." & return & return & Â
+				"  " & (renamesSuccessful as string) & " files renamed"
+			if renamesNotConfirmed > 0 then set msg to msg & return & Â
+				"  " & (renamesNotConfirmed as string) & " files skipped"
+			if renamesWithErrors > 0 then set msg to msg & return & Â
+				"  " & (renamesWithErrors as string) & " renaming errors"
+			
+			if theResult is RENAME_ERROR_STOP_RENAMING then set msg to msg & return & return & Â
+				"Renaming was stopped by the user."
+			
+			display dialog msg buttons {"OK"} default button 1 with icon note
+		end if
+		
+		(* Close the progress bar *)
+		(*if showProgressBar then
+			close progress indicator progressBar
+		end if*)
+	end tell -- application iTunes
+end RenameTracks
+
+on RenameSingleTrack(theTrack, newName, progressString)
+	tell application "iTunes"
+		(* First of all, if this track is a URL or other stream, show an error and return *)
+		if ((kind of theTrack) as string) is in {"Playlist url"} then
+			set errMsg to "The track \"" & (name of theTrack) & "\" appears to be a stream. " & Â
+				"It cannot be renamed. Do you wish to continue renaming the rest of the files?"
+			set continueRenaming to my GetYesNo(errMsg, true)
+			if continueRenaming then return RENAME_ERROR_CONTINUE_RENAMING
+			return RENAME_ERROR_STOP_RENAMING
+		end if
+		
+		set PaddedDiscCount to my PadNumber(disc count of theTrack, DiscCountMinimumLength, DiscCountPadCharacter)
+		set PaddedDiscNumber to my PadNumber(disc number of theTrack, DiscNumberMinimumLength, DiscNumberPadCharacter)
+		set PaddedTrackCount to my PadNumber(track count of theTrack, TrackCountMinimumLength, TrackCountPadCharacter)
+		set PaddedTrackNumber to my PadNumber(track number of theTrack, TrackNumberMinimumLength, TrackNumberPadCharacter)
+		
+		(* Replace all of the tags in the rename string with the values. *)
+		tell me to set newName to replaceText(newName, "[album]", album of theTrack)
+		tell me to set newName to replaceText(newName, "[artist]", artist of theTrack)
+		tell me to set newName to replaceText(newName, "[bit rate]", bit rate of theTrack)
+		tell me to set newName to replaceText(newName, "[comment]", comment of theTrack)
+		tell me to set newName to replaceText(newName, "[composer]", composer of theTrack)
+		--tell me to set newName to replaceText(newName, "[date added]", date added of theTrack)
+		tell me to set newName to replaceText(newName, "[disc count]", PaddedDiscCount)
+		tell me to set newName to replaceText(newName, "[disc number]", PaddedDiscNumber)
+		tell me to set newName to replaceText(newName, "[duration]", duration of theTrack)
+		tell me to set newName to replaceText(newName, "[EQ]", EQ of theTrack)
+		tell me to set newName to replaceText(newName, "[genre]", genre of theTrack)
+		tell me to set newName to replaceText(newName, "[kind]", kind of theTrack)
+		tell me to set newName to replaceText(newName, "[sample rate]", sample rate of theTrack)
+		--tell me to set newName to replaceText(newName, "[time]", time of theTrack)
+		tell me to set newName to replaceText(newName, "[title]", name of theTrack)
+		tell me to set newName to replaceText(newName, "[track count]", PaddedTrackCount)
+		tell me to set newName to replaceText(newName, "[track number]", PaddedTrackNumber)
+		tell me to set newName to replaceText(newName, "[year]", year of theTrack)
+		--log "*"
+		
+		(* Replace the "bad" characters that may exist in the filename *)
+		set newName to my replaceText(newName, ":", InvalidCharacterReplacement)
+		
+		(* Get the path to the existing file *)
+		set thePath to location of theTrack
+		
+		(* If we are confirming operations and it was not confirmed return the result. *)
+		if showConfirmOperationMessage then
+			tell application "Finder" to set currentFilename to (name of thePath)
+			set msg to "Should the file " & currentFilename & " be renamed to " & newName & "?"
+			set operationConfirmed to my GetYesNo(progressString & return & return & msg, true)
+			if (not operationConfirmed) then return RENAME_NOT_CONFIRMED
+		end if
+		
+		
+		try -- to rename the file
+			tell application "Finder" to set name of thePath to newName
+			return RENAME_SUCCESSFUL
+		end try
+		
+		(* Since the rename didn't work, find out what happened. *)
+		tell application "Finder" to set pathExists to (exists thePath)
+		if pathExists then -- there was some error renaming the file, most like the new name already exists.
+			set errMsg to "An error occured. The new name for the file " & thePath & " seems to be too long or already in use. " & Â
+				"Do you wish to continue renaming the rest of the files?"
+			set continueRenaming to GetYesNo(errMsg, true)
+			if not continueRenaming then return RENAME_ERROR_STOP_RENAMING
+		else -- the file iTunes think is there isn't really there.
+			set errMsg to "The the file for the song named \"" & (name of theTrack) & "\" cannot be found. " & Â
+				"Do you want to remove this track from you library?"
+			set removeTrack to GetYesNo(errMsg, true)
+			if removeTrack then delete theTrack
+			
+			set errMsg to "Do you want to continue renaming the rest of the tracks?"
+			set continueRenaming to GetYesNo(errMsg, true)
+			if not continueRenaming then return RENAME_ERROR_STOP_RENAMING
+		end if
+	end tell
+	
+	return RENAME_ERROR_CONTINUE_RENAMING
+end RenameSingleTrack
+
+
+on GetEditedRenameString(theMessage, renameString)
+	tell application "iTunes" to set decision to display dialog theMessage default answer renameString buttons {"Help", "Go Back", "Save"} Â
+		default button 3 with icon note
+	
+	if button returned of decision is "Save" then
+		set renameString to (text returned of decision)
+	else if button returned of decision is "Go Back" then
+		set renameString to ""
+	else if button returned of decision is "Help" then
+		tell application "iTunes" to display dialog "The bracketed phrases below will be replaced by the track-specific data:" & return & return & Â
+			"[title]" & tab & "[album]" & tab & "[artist]" & tab & "[bit rate]" & tab & "[comment]" & return & Â
+			"[composer]" & tab & "[duration]" & tab & "[EQ]" & tab & "[genre]" & tab & "[kind]" & return & Â
+			"[sample rate]" & tab & "[track count]" & return & Â
+			"[track number]" & tab & "[year]" & return & Â
+			"[disc count]" & tab & "[disc number]" buttons {"OK"} default button 1
+		set renameString to my GetEditedRenameString(theMessage, (text returned of decision))
+	end if
+	
+	return renameString
+end GetEditedRenameString
+
+
+
+on PadNumber(inputNumber, minLength, padString)
+	set paddedString to (inputNumber as string)
+	repeat while length of paddedString < minLength
+		set paddedString to padString & paddedString
+	end repeat
+	return paddedString
+end PadNumber
+
+
+
+
+on replaceText(inputString, searchFor, replaceWith)
+	local od, theList, outputString
+	set od to AppleScript's text item delimiters
+	
+	set AppleScript's text item delimiters to {(searchFor as string)}
+	set theList to every text item of inputString
+	set AppleScript's text item delimiters to {(replaceWith as string)}
+	set outputString to theList as string
+	
+	set AppleScript's text item delimiters to od
+	return outputString
+end replaceText
+
+
+on GetPaddingPreferences(tagName, minLength, padCharacter)
+	local question
+	
+	(* Get a minimum length (that is at least zero) *)
+	set question to "What should the minimum length of the " & tagName & " field be?"
+	set minLength to my GetInteger(question, minLength)
+	if (minLength < 0) then set minLength to 0
+	
+	if (minLength > 0) then
+		set question to "What should the padding character of the " & tagName & " field be?"
+		set padCharacter to my GetCharacter(question, padCharacter)
+	end if
+	
+	return {minLength, padCharacter}
+end GetPaddingPreferences
+
+on GetCharacter(message, currentValue)
+	return GetString(message, currentValue, 1, 1)
+end GetCharacter
+
+-- Keep trying to get an Integer until we get one, or the user presses cancel.
+-- If the user enters a number, return it. Otherwise, return the current value.
+on GetInteger(message, currentValue)
+	local theResult, i
+	repeat
+		tell application "iTunes" to set theResult to display dialog message default answer currentValue buttons {"Cancel", "OK"} default button 2
+		if (button returned of theResult is "OK") then
+			try
+				set i to (text returned of theResult)
+				set currentValue to (i as integer)
+				exit repeat
+			end try
+		else
+			exit repeat
+		end if
+	end repeat
+	return currentValue
+end GetInteger
+
+on GetString(message, currentValue, minLength, maxLength)
+	local theResult, s, errMsg
+	repeat
+		tell application "iTunes" to set theResult to display dialog message default answer currentValue buttons {"Cancel", "OK"} default button 2
+		if (button returned of theResult is "OK") then
+			set s to (text returned of theResult)
+			if (length of s ³ minLength and length of s ² maxLength) then
+				set currentValue to s
+				exit repeat
+			else
+				if (minLength is 1) and (minLength is maxLength) then
+					set errMsg to "A single character must be entered!"
+				else if (minLength is maxLength) then
+					set errMsg to "The string must be " & (minLength as string) & " characters long!"
+				else
+					set errMsg to "The string must be between " & (minLength as string) & Â
+						" and " & (maxLength as string) & " characters long!"
+				end if
+				
+				tell application "iTunes" to display dialog errMsg buttons {"OK"} default button 1 with icon stop
+			end if
+		else
+			exit repeat
+		end if
+	end repeat
+	
+	return currentValue
+end GetString
+
+on GetYesNo(message, current_value)
+	local default_button
+	if current_value is true then
+		set default_button to 2
+	else
+		set default_button to 1
+	end if
+	
+	tell application "iTunes" to display dialog message buttons {"No", "Yes"} default button default_button
+	set yes_no to button returned of result
+	if yes_no is "Yes" then
+		return true
+	else
+		return false
+	end if
+end GetYesNo
